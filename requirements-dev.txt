@@ -1,0 +1,13 @@
+# Development dependencies, on top of requirements.txt:
+#
+#   .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+#
+# The test suite runs against the mock backend and needs no model weights, so
+# nothing here pulls in llama-cpp-python beyond what the runtime already has.
+
+-r requirements.txt
+
+pytest==9.1.1
+iniconfig==2.3.0
+pluggy==1.6.0
+ruff==0.16.3

@@ -1,0 +1,64 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\newcommand{\ours}{\textsc{Ouroboros}}
+
+\title{A Hazardous Document}
+\author{Jane Doe}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This abstract is ordinary prose and should be translated. It refers to
+Equation~\ref{eq:loss} and cites prior work \cite{smith2020}.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+This is a plain paragraph of prose. It contains inline math $O(n \log n)$,
+a citation \cite{doe2021,smith2020}, a reference to \ref{sec:intro}, and a
+URL \url{https://example.com/paper.pdf}. Some words are \emph{emphasised}
+and others are \textbf{bold}.
+
+% This comment must survive untouched.
+
+\begin{equation}
+\label{eq:loss}
+\mathcal{L}(\theta) = \sum_{i=1}^{N} \log p(y_i \mid x_i; \theta)
+\end{equation}
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Method & Accuracy & Latency \\
+\midrule
+Ours  & 94.7 & 12ms \\
+Prior & 91.2 & 31ms \\
+\bottomrule
+\end{tabular}
+\caption{Comparison against baselines on the held-out set.}
+\label{tab:main}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.8\linewidth]{figures/arch.pdf}
+\caption{Architecture of the proposed system.}
+\label{fig:arch}
+\end{figure}
+
+\begin{verbatim}
+def train(model, data):
+    return model.fit(data)
+\end{verbatim}
+
+Another prose paragraph follows and should be translated normally, because
+it is ordinary running text that carries meaning.
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

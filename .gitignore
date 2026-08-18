@@ -1,0 +1,28 @@
+# Local model weights, downloaded once, never committed
+models/
+
+# Personas are private. A persona file is an author's writing style, and this
+# repo is public, so every persona is ignored except the checked-in template.
+# Set up your own with: cp personas/example.md personas/default.md
+personas/*
+!personas/example.md
+!personas/README.md
+
+# Run artifacts
+out/
+.ouroboros-cache/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS
+.DS_Store

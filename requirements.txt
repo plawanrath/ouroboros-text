@@ -1,0 +1,49 @@
+# Pinned runtime dependencies. Install into a repo-local virtualenv:
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+#
+# .venv/ is gitignored. Never install these into a system or global Python.
+#
+# Note on llama-cpp-python: it ships as a source distribution and compiles
+# against llama.cpp, which takes several minutes. On Apple Silicon, Metal is
+# enabled by default. To force it explicitly:
+#
+#   CMAKE_ARGS="-DGGML_METAL=on" .venv/bin/pip install -r requirements.txt
+
+# --- inference -------------------------------------------------------------
+# 0.3.35 is the FLOOR, not a preference: it is the first release whose vendored
+# llama.cpp registers the "muse-glimmer" architecture. On 0.3.34 the model
+# fails to load at all.
+llama_cpp_python==0.3.35
+numpy==2.5.2
+diskcache==5.6.3
+
+# --- document parsing ------------------------------------------------------
+markdown-it-py==4.2.0
+mdit-py-plugins==0.6.1
+pylatexenc==2.11
+mdurl==0.1.2
+
+# --- model download --------------------------------------------------------
+huggingface_hub==1.27.0
+hf-xet==1.6.0
+filelock==3.32.3
+fsspec==2026.7.0
+packaging==26.3
+PyYAML==6.0.3
+tqdm==4.70.0
+typing_extensions==4.16.0
+
+# --- http stack (pulled in by huggingface_hub) -----------------------------
+anyio==4.14.2
+certifi==2026.7.22
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.18
+
+# --- cli -------------------------------------------------------------------
+click==8.4.2
+Jinja2==3.1.6
+MarkupSafe==3.0.3

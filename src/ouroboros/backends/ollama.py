@@ -5,10 +5,12 @@ build tuned for Apple Silicon, so this is the fallback if a llama.cpp regression
 ever breaks the in-process path, and the fast path on machines where MLX beats
 Metal-via-llama.cpp.
 
-Ollama keeps weights in its own store rather than in ``models/``. Pointing
-OLLAMA_MODELS at the project directory keeps this project's promise that all
-weights live in one gitignored place, at the cost of not sharing a cache with
-any ollama models pulled outside the project.
+Ollama keeps weights in its own store rather than in ``models/``, and that is
+left alone. An earlier version pointed OLLAMA_MODELS at the project directory to
+keep every weight in one gitignored place, which was tidy and wrong: it hid the
+user's entire existing library and would have demanded a fresh 19 GB pull to use
+a model already on the machine. ``models_dir`` is still accepted for anyone who
+does want that, but nothing sets it by default.
 """
 from __future__ import annotations
 
@@ -21,6 +23,9 @@ DEFAULT_MODEL = "muse-glimmer:30b"
 
 @register("ollama")
 class OllamaBackend:
+    #: Read by the CLI when --model is not given.
+    DEFAULT_MODEL = DEFAULT_MODEL
+
     def __init__(
         self,
         model: str = DEFAULT_MODEL,

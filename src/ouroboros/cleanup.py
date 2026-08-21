@@ -30,6 +30,34 @@ _SPACE_BEFORE_PUNCT = re.compile(rf"{_INLINE_WS}+([.,;:!?%\)\]])")
 _SPACE_AFTER_OPEN = re.compile(rf"([(\[]){_INLINE_WS}+")
 _REPEATED_SPACE = re.compile(rf"{_INLINE_WS}{{2,}}")
 
+#: Structural markers a model sometimes writes back even though they were never
+#: in its input, because the text it was handed reads like a list item.
+_ECHOED = (
+    (re.compile(r"\A(?:[-*+]|\d{1,9}[.)])[ \t]+"), "list marker"),
+    (re.compile(r"\A>[ \t]*"), "blockquote marker"),
+    (re.compile(r"\A#{1,6}[ \t]+"), "heading marker"),
+    (re.compile(r"\A\\item\b[ \t]*"), "latex item"),
+)
+
+
+def strip_echoed_markers(original: str, translated: str) -> tuple[str, list[str]]:
+    """Remove a structural marker the model invented.
+
+    The container's marker lives outside the translated span, so the model never
+    sees one. It writes one anyway often enough to matter: handed "A short
+    bullet with a citation", it returns "- A short bullet with a citation", and
+    splicing that back under the real marker yields "- - A short bullet".
+
+    Only markers absent from the input are removed. If the source genuinely
+    began with one, it stays.
+    """
+    fixed: list[str] = []
+    for pattern, label in _ECHOED:
+        if pattern.match(translated) and not pattern.match(original):
+            translated = pattern.sub("", translated, count=1)
+            fixed.append(f"echoed {label}")
+    return translated, fixed
+
 
 def strip_pivot_artifacts(text: str) -> tuple[str, list[str]]:
     """Normalise spacing the pivot language introduced.

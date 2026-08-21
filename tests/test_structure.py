@@ -20,7 +20,12 @@ from ouroboros.pipeline import RoundTrip
 formats.load_builtins()
 
 FIXTURES = Path(__file__).parent / "fixtures"
-CASES = [("hazard.md", "markdown"), ("hazard.tex", "latex")]
+CASES = [
+    ("hazard.md", "markdown"),
+    ("hazard.tex", "latex"),
+    ("nested.md", "markdown"),
+    ("nested.tex", "latex"),
+]
 
 
 @pytest.fixture(params=CASES, ids=[c[0] for c in CASES])

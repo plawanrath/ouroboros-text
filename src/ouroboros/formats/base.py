@@ -17,7 +17,13 @@ class Format(Protocol):
     name: str
     extensions: tuple[str, ...]
 
-    def parse(self, source: str, path: str | None = None) -> Document:
+    def parse(self, source: str, path: str | None = None, **kwargs) -> Document:
+        """Report which character ranges of ``source`` hold prose.
+
+        Extra keyword arguments are format-specific and optional. LaTeX accepts
+        ``fragment=True`` for a file that is included by another; a format that
+        has no such notion simply ignores what it does not recognise.
+        """
         ...
 
 

@@ -112,12 +112,40 @@ def check_no_control_tokens(source: str, output: str) -> Check:
     return Check(False, "control_tokens", f"leaked {sorted(set(leaked))}")
 
 
+def check_numbers(source: str, output: str) -> Check:
+    """Every number in the source must come back, and no new ones may appear.
+
+    This is the one fidelity check that blocks rather than reports. A changed
+    digit in a paper is not a stylistic drift, it is a false claim, and it is
+    the failure an embedding-based similarity score is least able to see: a
+    passage with 256 swapped for 512 scores 0.996 against its original.
+
+    Comparison is on digit sequences with separators removed, so the French
+    convention of writing 1 000,5 for 1,000.5 does not register as a change.
+    """
+    from .fidelity import numbers
+
+    want, got = numbers(source), numbers(output)
+    if want == got:
+        return Check(True, "numbers")
+
+    lost = sorted((want - got).elements())
+    gained = sorted((got - want).elements())
+    parts = []
+    if lost:
+        parts.append(f"lost {lost}")
+    if gained:
+        parts.append(f"gained {gained}")
+    return Check(False, "numbers", ", ".join(parts))
+
+
 DEFAULT_CHECKS = (
     check_nonempty,
     check_sentinels,
     check_no_control_tokens,
     check_chatter,
     check_length_ratio,
+    check_numbers,
 )
 
 

@@ -1,0 +1,15 @@
+# Terms that must survive the round trip exactly as written.
+# One per line. Everything after a # is a comment.
+#
+# Best used for names and identifiers, which carry no grammatical role:
+# a product name, a model identifier, a defined shorthand. Masking those
+# costs nothing.
+#
+# Avoid listing ordinary technical vocabulary. Hiding "attention head"
+# from the model makes the sentence around it worse, because the model
+# loses the noun it has to agree with. It handles such terms correctly
+# on its own.
+
+Muse-Glimmer
+ouroboros-text
+Q5_K_M

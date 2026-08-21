@@ -8,6 +8,10 @@ personas/*
 !personas/example.md
 !personas/README.md
 
+# A glossary can name unpublished work, so the default one is private.
+# The template stays tracked.
+glossary.txt
+
 # Run artifacts
 out/
 .ouroboros-cache/

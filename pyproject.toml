@@ -7,12 +7,12 @@ name = "ouroboros-text"
 version = "0.1.0"
 description = "Round-trip translation of LaTeX and Markdown through a pivot language, using a local model"
 readme = "README.md"
-requires-python = ">=3.10"
+# 3.11 is the floor: tomllib (config files) and typing.Self both arrived in it.
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 
 dependencies = [
-    "typer>=0.12",
-    "rich>=13.0",
+    "click>=8.1",
     "markdown-it-py>=3.0",
     "mdit-py-plugins>=0.4",
     "pylatexenc>=2.10",

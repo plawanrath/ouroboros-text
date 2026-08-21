@@ -64,6 +64,10 @@ def _r(name: str, pattern: str, keep_group: str | None = None, flags: int = 0) -
 
 # Order matters: earlier rules win over later ones on overlapping matches.
 MARKDOWN_RULES: list[Rule] = [
+    # A task list checkbox opens the item's text. It is not CommonMark, so the
+    # parser hands it over as ordinary prose, and a translator will happily move
+    # it to the end of the sentence or drop the space after it.
+    _r("task_marker", r"\A\[[ xX]\][ \t]+"),
     _r("code", r"`+[^`]*`+"),
     _r("math", r"\$\$?(?:\\.|[^$\\])+\$\$?"),
     _r("autolink", r"<https?://[^>\s]+>"),
@@ -177,5 +181,16 @@ class Masker:
         return SENTINEL_RE.findall(text)
 
 
-def rules_for(fmt: str) -> list[Rule]:
-    return {"markdown": MARKDOWN_RULES, "latex": LATEX_RULES}[fmt]
+def rules_for(fmt: str, glossary=None) -> list[Rule]:
+    """The masking rules for a format, with any glossary terms taking priority.
+
+    Glossary terms go first so a protected name is claimed before a generic
+    rule can take part of it, and so a term containing punctuation is not split
+    by the escape or brace rules.
+    """
+    rules = list({"markdown": MARKDOWN_RULES, "latex": LATEX_RULES}[fmt])
+    if glossary is not None:
+        pattern = glossary.pattern()
+        if pattern is not None:
+            rules.insert(0, Rule("glossary", pattern))
+    return rules

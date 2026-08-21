@@ -108,6 +108,22 @@ class Document:
         """Round-trip with no replacements. Must equal the source; used in tests."""
         return self.render({})
 
+    def subset(self, indices) -> Document:
+        """A copy holding only the selected segments.
+
+        Dropping a segment does not lose it from the output. Anything not
+        reported as prose is passed through untouched, so a subset simply
+        translates less of the document and leaves the rest in English. That is
+        what makes spot-checking a long paper safe.
+        """
+        keep = set(indices)
+        return Document(
+            source=self.source,
+            segments=[s for i, s in enumerate(self.segments) if i in keep],
+            path=self.path,
+            fmt=self.fmt,
+        )
+
 
 def merge_adjacent(spans: Iterable[Span], source: str, gap_pattern: str = " \t") -> list[Span]:
     """Join spans separated only by characters in ``gap_pattern``.

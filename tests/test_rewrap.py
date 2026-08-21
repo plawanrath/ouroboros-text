@@ -147,3 +147,15 @@ def test_fused_group_keeps_attached_punctuation():
     wrapped = rewrap("others are [[0]]bold[[1]]. Next sentence here.", 80,
                      {"[[0]]": "\\textbf{", "[[1]]": "}"}, [("[[0]]", "[[1]]")])
     assert "[[1]] ." not in wrapped
+
+
+def test_a_paragraph_whose_last_line_is_longest_is_still_wrapped():
+    """Regression: such paragraphs were reflowed into one long line.
+
+    Prose wrapped by hand or by an editor often ends on a line a few characters
+    longer than the ones above it. Requiring the last line to fit within the
+    others' width rejected those, and the whole paragraph came back unwrapped.
+    """
+    text = ("Beta section elaborating a second wholly novel protocol, distinct in wording\n"
+            "from the first, and equally absent from any cache this tool has ever written.")
+    assert detect_width(text) == 77

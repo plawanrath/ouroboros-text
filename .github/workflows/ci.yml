@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # llama-cpp-python is deliberately not installed here. It compiles for
+      # several minutes, needs no part in these tests, and the guarantee under
+      # test is a property of segmentation and splicing rather than of any
+      # model. The suite runs against the mock backend in well under a second.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install markdown-it-py mdit-py-plugins pylatexenc click pytest ruff
+          pip install -e . --no-deps
+
+      - name: Lint
+        run: ruff check src/ tests/
+
+      - name: Test
+        run: pytest -q
+
+      - name: The core guarantee, on every fixture
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from ouroboros.formats import base as formats
+          formats.load_builtins()
+
+          for path in sorted(Path("tests/fixtures").rglob("*")):
+              if path.suffix.lower() not in formats.supported_extensions():
+                  continue
+              source = path.read_text(encoding="utf-8")
+              fmt = formats.for_path(path)
+              # Included sections have no \begin{document}; parse them as bodies.
+              doc = fmt.parse(source, path=str(path), fragment=True)
+              assert doc.unchanged() == source, f"splice is not lossless: {path}"
+              print(f"ok  {path}  ({len(doc.segments)} segments)")
+          PY

@@ -52,12 +52,20 @@ PROSE_MACRO_ARGS = {
     "underline": 0, "footnote": 0, "text": 0,
 }
 
+#: Sectioning commands. Their argument is a title, so the author's
+#: capitalisation of it is meaningful and is restored after translation.
+HEADING_MACROS = {
+    "section", "subsection", "subsubsection", "paragraph", "subparagraph",
+    "chapter", "part", "title",
+}
+
 #: Captions are protected by requirement, so \caption is intentionally absent
 #: from PROSE_MACRO_ARGS. Named here to document that the omission is a choice.
 CAPTION_MACROS = {"caption", "captionof", "subcaption"}
 
 _PARA_SPLIT = re.compile(r"\n[ \t]*\n")
 _BLANK_LINE = re.compile(r"\n[ \t]*\n")
+_ITEM_RE = re.compile(r"\\item\b")
 
 #: Macros pylatexenc's default database does not know, whose arguments are
 #: identifiers or paths. Without a spec the walker leaves the braces as a bare
@@ -112,6 +120,10 @@ def _joinable(gap: str) -> bool:
     # An environment boundary separates blocks, never words in a sentence.
     if "\\begin{" in gap or "\\end{" in gap:
         return False
+    # \item starts a new list entry. Merging across one would hand the model two
+    # unrelated bullets as a single paragraph and invite it to blend them.
+    if _ITEM_RE.search(gap):
+        return False
     # Swallowing a comment into a translatable span would work, since masking
     # would hide it, but keeping comments outside prose entirely is simpler to
     # reason about and costs nothing.
@@ -122,17 +134,32 @@ class LatexFormat:
     name = "latex"
     extensions = (".tex", ".latex")
 
-    def parse(self, source: str, path: str | None = None) -> Document:
+    def parse(self, source: str, path: str | None = None,
+              fragment: bool = False) -> Document:
+        """Find the prose spans in a LaTeX source.
+
+        ``fragment`` marks a file that is included by another rather than
+        standing on its own. Such a file has no ``\\begin{document}``, and the
+        default behaviour of reporting no prose at all would silently skip every
+        section of a multi-file paper. Traversal sets this; a file opened
+        directly does not get it, because a stray .sty is far likelier than a
+        fragment someone meant to translate on its own.
+        """
         nodes, _, _ = LatexWalker(source, latex_context=_latex_context()).get_latex_nodes()
 
-        body = self._document_body(nodes)
+        body = nodes if fragment else self._document_body(nodes)
         runs: list[tuple[int, int]] = []
-        self._collect(body, source, runs)
+        headings: list[tuple[int, int]] = []
+        self._collect(body, source, runs, headings)
         runs = _merge_runs(runs, source)
 
         segments: list[Segment] = []
         for lo, hi in runs:
-            segments.extend(self._paragraphs(source, lo, hi))
+            is_heading = any(h_lo >= lo and h_hi <= hi for h_lo, h_hi in headings)
+            for seg in self._paragraphs(source, lo, hi):
+                if is_heading:
+                    seg.meta["heading"] = True
+                segments.append(seg)
 
         return Document(source=source, segments=segments, path=path, fmt=self.name)
 
@@ -150,7 +177,9 @@ class LatexFormat:
                 return n.nodelist or []
         return []
 
-    def _collect(self, nodes, source: str, out: list[tuple[int, int]]) -> None:
+    def _collect(self, nodes, source: str, out: list[tuple[int, int]],
+                 headings: list[tuple[int, int]] | None = None,
+                 in_heading: bool = False) -> None:
         for n in nodes or []:
             if n is None:
                 continue
@@ -163,26 +192,38 @@ class LatexFormat:
                     # itself, and _merge_runs would then join across it.
                     lead = len(raw) - len(raw.lstrip())
                     trail = len(raw) - len(raw.rstrip())
-                    out.append((n.pos + lead, n.pos + n.len - trail))
+                    span = (n.pos + lead, n.pos + n.len - trail)
+                    out.append(span)
+                    if in_heading and headings is not None:
+                        headings.append(span)
 
             elif isinstance(n, LatexEnvironmentNode):
                 if n.environmentname in PROSE_ENVIRONMENTS:
-                    self._collect(n.nodelist, source, out)
+                    self._collect(n.nodelist, source, out, headings)
                 # else: opaque, contributes nothing
 
             elif isinstance(n, LatexMacroNode):
                 idx = PROSE_MACRO_ARGS.get(n.macroname)
                 if idx is None:
                     continue
-                args = [a for a in (n.nodeargd.argnlist if n.nodeargd else []) if a is not None]
-                if idx < len(args):
-                    arg = args[idx]
-                    # Descend into the group's contents so the surrounding braces
-                    # stay outside the translated span.
-                    if isinstance(arg, LatexGroupNode):
-                        self._collect(arg.nodelist, source, out)
-                    else:
-                        self._collect([arg], source, out)
+
+                # Count only brace-delimited arguments. pylatexenc gives
+                # \section the argument list (star, optional, group), so
+                # \section*{Title} puts a bare "*" where a positional index
+                # expects the title: the "*" became a one-character segment to
+                # translate and the real heading was never seen at all. The
+                # optional [short title] is skipped for the same reason, being
+                # a running-head variant rather than the title itself.
+                braces = [
+                    a for a in (n.nodeargd.argnlist if n.nodeargd else [])
+                    if isinstance(a, LatexGroupNode)
+                    and getattr(a, "delimiters", None) == ("{", "}")
+                ]
+                if idx < len(braces):
+                    # Descend into the group's contents so the surrounding
+                    # braces stay outside the translated span.
+                    heading = in_heading or n.macroname in HEADING_MACROS
+                    self._collect(braces[idx].nodelist, source, out, headings, heading)
 
             # A bare group is deliberately NOT descended into. In a document
             # body it is almost always the argument of a macro this parser does

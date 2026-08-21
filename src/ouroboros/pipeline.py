@@ -19,7 +19,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import cleanup, prompts, rewrap
+from . import cleanup, fidelity, prompts, rewrap, terms
 from .document import Document, Span
 from .masking import Masker, rules_for
 from .persona import Persona, none_persona
@@ -36,7 +36,15 @@ class SegmentResult:
     translated: bool = True
     reason: str = ""
     rules_applied: list[str] = field(default_factory=list)
+    #: Ways the output's claims differ from the source's. Reported, not
+    #: enforced: numbers are already blocked by the validation ladder, and the
+    #: rest are worth a human glance but too noisy to fail a run over.
+    issues: list[dict] = field(default_factory=list)
     seconds: float = 0.0
+
+    @property
+    def severe(self) -> int:
+        return sum(1 for i in self.issues if i.get("severity") == "high")
 
     @property
     def changed(self) -> bool:
@@ -52,6 +60,9 @@ class RunReport:
     model: str
     segments: list[SegmentResult] = field(default_factory=list)
     seconds: float = 0.0
+    #: True when the run was stopped part way. The output still holds every
+    #: segment finished before the interrupt; the rest is the original English.
+    interrupted: bool = False
 
     @property
     def translated(self) -> int:
@@ -60,6 +71,11 @@ class RunReport:
     @property
     def fallbacks(self) -> list[SegmentResult]:
         return [s for s in self.segments if not s.translated]
+
+    @property
+    def flagged(self) -> list[SegmentResult]:
+        """Translated segments whose claims differ from the source's."""
+        return [s for s in self.segments if s.translated and s.issues]
 
     def to_json(self) -> str:
         return json.dumps(
@@ -73,6 +89,8 @@ class RunReport:
                 "segments_total": len(self.segments),
                 "segments_translated": self.translated,
                 "segments_fallback": len(self.fallbacks),
+                "segments_with_issues": len(self.flagged),
+                "interrupted": self.interrupted,
                 "segments": [asdict(s) for s in self.segments],
             },
             indent=2,
@@ -107,6 +125,9 @@ class Cache:
         path = self.dir / f"{self._key(*parts)}.txt"
         return path.read_text(encoding="utf-8") if path.exists() else None
 
+    def has(self, *parts: str) -> bool:
+        return bool(self.dir) and (self.dir / f"{self._key(*parts)}.txt").exists()
+
     def put(self, value: str, *parts: str) -> None:
         if not self.dir:
             return
@@ -125,6 +146,8 @@ class RoundTrip:
         max_tokens: int = 2048,
         model_id: str = "unknown",
         preserve_wrapping: bool = True,
+        should_stop=None,
+        glossary=None,
     ) -> None:
         self.backend = backend
         self.pivot = [pivot] if isinstance(pivot, str) else list(pivot)
@@ -136,6 +159,14 @@ class RoundTrip:
         #: Restore the source's hard wrapping, so a translated paragraph does
         #: not reflow into one long line and blow up the diff.
         self.preserve_wrapping = preserve_wrapping
+        #: Asked between segments. Cooperative rather than exception-driven,
+        #: because a signal arriving inside a 25-second call into llama.cpp is
+        #: delivered at an arbitrary moment, and stopping cleanly at a segment
+        #: boundary is what makes the partial output a valid document.
+        self.should_stop = should_stop
+        #: Terms that must survive verbatim. Masked, so their survival is a
+        #: property of the pipeline rather than a hope about the model.
+        self.glossary = glossary
 
     # ------------------------------------------------------------------ hops
 
@@ -202,8 +233,43 @@ class RoundTrip:
 
         return masked, hops, self.max_attempts, reason
 
-    def run(self, doc: Document) -> tuple[str, RunReport]:
-        masker = Masker(rules_for(doc.fmt or "markdown"))
+    def pending(self, doc: Document) -> tuple[int, int]:
+        """Return ``(already_cached, total)`` translatable segments.
+
+        A run on a real paper takes hours, and the single most useful thing to
+        know before starting is how much of it is already done. Because the
+        cache is keyed on the exact input to each hop, that is answerable
+        without running anything: walk the chain, and stop counting the moment
+        a hop is missing, since the next hop's input is that hop's output and is
+        therefore unknowable.
+        """
+        if not self.cache:
+            return 0, len(doc.segments)
+
+        masker = Masker(rules_for(doc.fmt or "markdown", self.glossary))
+        cached = total = 0
+
+        for seg in doc.segments:
+            body = rewrap.strip_continuation(seg.text, seg.meta.get("indent", ""))
+            masked = masker.mask(body).text
+            if not _has_words(masked):
+                continue
+            total += 1
+
+            current = masked
+            for src, dst in self._hop_chain():
+                system = self._system_for(src, dst)
+                hit = self.cache.get(self.model_id, src, dst, system, "0.0", current)
+                if hit is None:
+                    break
+                current = hit
+            else:
+                cached += 1
+
+        return cached, total
+
+    def run(self, doc: Document, on_segment=None) -> tuple[str, RunReport]:
+        masker = Masker(rules_for(doc.fmt or "markdown", self.glossary))
         report = RunReport(
             path=doc.path or "<string>",
             fmt=doc.fmt or "",
@@ -215,9 +281,31 @@ class RoundTrip:
         replacements: dict[Span, str] = {}
         started = time.time()
 
+        try:
+            self._translate_all(doc, masker, report, replacements, on_segment)
+        except KeyboardInterrupt:
+            # Stop between segments rather than at an arbitrary point inside
+            # one. Everything finished so far is spliced and written, and the
+            # cache means resuming re-does none of it.
+            report.interrupted = True
+
+        report.seconds = time.time() - started
+        return doc.render(replacements), report
+
+    def _translate_all(self, doc, masker, report, replacements, on_segment) -> None:
         for seg in doc.segments:
+            if self.should_stop and self.should_stop():
+                raise KeyboardInterrupt
             t0 = time.time()
-            result = masker.mask(seg.text)
+
+            # A segment inside a list or blockquote carries its container's
+            # continuation prefix on every line after the first. The model
+            # should see a paragraph, so the prefix comes off here and goes
+            # back on after wrapping.
+            indent = seg.meta.get("indent", "")
+            body = rewrap.strip_continuation(seg.text, indent)
+
+            result = masker.mask(body)
             masked, mapping = result.text, result.mapping
 
             # A segment with no words left after masking is pure markup that the
@@ -230,6 +318,8 @@ class RoundTrip:
                         seconds=time.time() - t0,
                     )
                 )
+                if on_segment:
+                    on_segment(report.segments[-1])
                 continue
 
             translated, hops, attempts, reason = self.translate_segment(masked)
@@ -242,6 +332,8 @@ class RoundTrip:
                         seconds=time.time() - t0,
                     )
                 )
+                if on_segment:
+                    on_segment(report.segments[-1])
                 continue
 
             cleaned, applied = self.persona.enforce(translated)
@@ -251,28 +343,53 @@ class RoundTrip:
             cleaned, artifacts = cleanup.strip_pivot_artifacts(cleaned)
             applied += artifacts
 
+            # The container's marker lives outside the span, so a marker in the
+            # output is one the model invented. Left in, it splices under the
+            # real one and yields "- - A short bullet".
+            cleaned, echoed = cleanup.strip_echoed_markers(masked, cleaned)
+            applied += echoed
+
+            # Restore the author's own forms. Both only ever substitute words
+            # the source itself contains, so neither needs a dictionary and
+            # neither can invent a spelling the author never used.
+            cleaned, respelled = terms.restore_spelling(masked, cleaned)
+            applied += [f"spelling {c}" for c in respelled]
+
+            if seg.meta.get("block") == "heading_open" or seg.meta.get("heading"):
+                cleaned, recased = terms.restore_capitalisation(masked, cleaned)
+                applied += [f"capitalisation {c}" for c in recased]
+
             # Both of these run while placeholders are still in place. After
             # restoration the text contains fragments with spaces inside them
             # that must not be split or trimmed.
-            cleaned = rewrap.tighten_placeholder_spacing(seg.text, cleaned, mapping)
+            # Measured against the dedented body, so the detected width is the
+            # prose column rather than the column plus the bullet's indent.
+            cleaned = rewrap.tighten_placeholder_spacing(body, cleaned, mapping)
             if self.preserve_wrapping:
                 cleaned = rewrap.match_source_wrapping(
-                    seg.text, cleaned, mapping, result.groups
+                    body, cleaned, mapping, result.groups
                 )
+            cleaned = rewrap.apply_continuation(cleaned, indent)
 
             final = masker.unmask(cleaned, mapping)
             replacements[seg.span] = final
+
+            # Compared while masked, so identical placeholders on both sides
+            # contribute nothing and only the prose is judged.
+            issues = [
+                {"kind": i.kind, "detail": i.detail, "severity": i.severity}
+                for i in fidelity.compare(masked, cleaned)
+            ]
 
             report.segments.append(
                 SegmentResult(
                     span=seg.span, original=seg.text, final=final, hops=hops,
                     attempts=attempts, translated=True, rules_applied=applied,
-                    seconds=time.time() - t0,
+                    issues=issues, seconds=time.time() - t0,
                 )
             )
-
-        report.seconds = time.time() - started
-        return doc.render(replacements), report
+            if on_segment:
+                on_segment(report.segments[-1])
 
 
 def _has_words(text: str) -> bool:

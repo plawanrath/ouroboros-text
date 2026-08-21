@@ -20,6 +20,35 @@ from .masking import SENTINEL_RE
 _WS = re.compile(r"\s+")
 
 
+def strip_continuation(text: str, prefix: str) -> str:
+    """Remove a container's continuation prefix from every line but the first.
+
+    The model should see a paragraph, not a bullet's indentation. A line that
+    does not carry the expected prefix is left-stripped instead, which covers
+    lazy continuation lines in blockquotes.
+    """
+    if not prefix or "\n" not in text:
+        return text
+
+    first, *rest = text.split("\n")
+    out = [first]
+    for line in rest:
+        if line.startswith(prefix):
+            out.append(line[len(prefix):])
+        else:
+            out.append(line.lstrip("> \t"))
+    return "\n".join(out)
+
+
+def apply_continuation(text: str, prefix: str) -> str:
+    """Put the container's continuation prefix back on every line but the first."""
+    if not prefix or "\n" not in text:
+        return text
+
+    first, *rest = text.split("\n")
+    return "\n".join([first] + [prefix + line for line in rest])
+
+
 def detect_width(text: str) -> int | None:
     """Infer the wrap width of a hard-wrapped paragraph, or None if it is not.
 
@@ -30,27 +59,22 @@ def detect_width(text: str) -> int | None:
     if len(lines) < 2:
         return None
 
-    # The last line of a paragraph is short by nature and would drag the
-    # estimate down, so it does not vote.
-    widths = [len(ln) for ln in lines[:-1]]
-    if not widths:
-        return None
-
-    spread = max(widths) - min(widths)
-    if spread > 24:
-        return None  # not a machine-wrapped paragraph
-
+    widths = [len(ln) for ln in lines]
     width = max(widths)
 
     # Too narrow to be a wrap column, so the line break means something else.
     if width < 20:
         return None
 
-    # The defining property of greedy wrapping: no line exceeds the width,
-    # including the last one. This is what separates a wrapped paragraph from
-    # two lines that happen to sit next to each other, where a short opening
-    # line would otherwise be mistaken for the column.
-    if len(lines[-1]) > width:
+    # In a wrapped paragraph every line but the last runs close to the column.
+    # That is what separates one from two lines that merely sit next to each
+    # other, where a short opening line would otherwise be read as the column.
+    #
+    # Measuring against the maximum rather than against the non-final lines
+    # matters: prose wrapped by hand or by an editor often ends on a line a few
+    # characters longer than the ones above it, and treating that as
+    # disqualifying left whole paragraphs reflowed into one long line.
+    if min(widths[:-1]) < width - 24:
         return None
 
     return width
@@ -157,6 +181,11 @@ def tighten_placeholder_spacing(original: str, translated: str,
     follows a space is untouched.
     """
     for sentinel, fragment in mapping.items():
+        # A fragment that already carries its own trailing space, such as a task
+        # list's "[ ] ", would otherwise end up with two.
+        if fragment and fragment[-1] in " \t":
+            translated = re.sub(rf"{re.escape(sentinel)}[ \t]+", sentinel, translated)
+
         at = original.find(fragment)
         if at <= 0 or original[at - 1].isspace():
             continue  # the source had a space here, or the fragment leads

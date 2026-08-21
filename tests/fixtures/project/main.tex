@@ -1,0 +1,22 @@
+\documentclass{article}
+\usepackage{graphicx}
+
+\title{A Multi File Paper}
+\author{Jane Doe}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This abstract lives in the root file and should be translated.
+\end{abstract}
+
+\input{sections/introduction}
+\include{sections/method}
+
+% \input{sections/commented_out}
+\input{sections/missing_file}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}

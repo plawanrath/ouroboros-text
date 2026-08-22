@@ -184,12 +184,13 @@ class RoundTrip:
 
     def _translate_once(self, text: str, src: str, dst: str, temperature: float) -> str:
         system = self._system_for(src, dst)
+        payload = prompts.user_message(text)
 
         # The system prompt is part of the key, not just the persona name.
         # Keying on the name alone would silently serve results generated under
         # an older prompt after the prompt or the persona body was edited, which
         # is the worst kind of cache bug: invisible and wrong.
-        cache_parts = (self.model_id, src, dst, system, str(temperature), text)
+        cache_parts = (self.model_id, src, dst, system, str(temperature), payload)
 
         if temperature == 0.0 and self.cache:
             hit = self.cache.get(*cache_parts)
@@ -197,7 +198,7 @@ class RoundTrip:
                 return hit
 
         out = self.backend.generate(
-            system, text, max_tokens=self.max_tokens, temperature=temperature
+            system, payload, max_tokens=self.max_tokens, temperature=temperature
         )
 
         if temperature == 0.0 and self.cache:
@@ -223,7 +224,9 @@ class RoundTrip:
             for src, dst in self._hop_chain():
                 current = self._translate_once(current, src, dst, temperature)
                 hops.append(current)
-                verdict = validate(masked, current)
+                # Word-level checks mean nothing against the pivot language,
+                # so they wait for the leg that lands back in English.
+                verdict = validate(masked, current, same_language=(dst == "en"))
                 if not verdict.ok:
                     reason = f"{src}->{dst}: {verdict.summary}"
                     break
@@ -233,8 +236,8 @@ class RoundTrip:
 
         return masked, hops, self.max_attempts, reason
 
-    def pending(self, doc: Document) -> tuple[int, int]:
-        """Return ``(already_cached, total)`` translatable segments.
+    def pending(self, doc: Document) -> tuple[int, int, int]:
+        """Return ``(already_cached, total, uncached_chars)``.
 
         A run on a real paper takes hours, and the single most useful thing to
         know before starting is how much of it is already done. Because the
@@ -244,15 +247,16 @@ class RoundTrip:
         therefore unknowable.
         """
         if not self.cache:
-            return 0, len(doc.segments)
+            chars = sum(len(s.text) for s in doc.segments)
+            return 0, len(doc.segments), chars
 
         masker = Masker(rules_for(doc.fmt or "markdown", self.glossary))
-        cached = total = 0
+        cached = total = uncached_chars = 0
 
         for seg in doc.segments:
             body = rewrap.strip_continuation(seg.text, seg.meta.get("indent", ""))
             masked = masker.mask(body).text
-            if not _has_words(masked):
+            if not prompts.long_enough(masked):
                 continue
             total += 1
 
@@ -265,8 +269,10 @@ class RoundTrip:
                 current = hit
             else:
                 cached += 1
+                continue
+            uncached_chars += len(masked)
 
-        return cached, total
+        return cached, total, uncached_chars
 
     def run(self, doc: Document, on_segment=None) -> tuple[str, RunReport]:
         masker = Masker(rules_for(doc.fmt or "markdown", self.glossary))
@@ -310,11 +316,13 @@ class RoundTrip:
 
             # A segment with no words left after masking is pure markup that the
             # block classifier let through. There is nothing to translate.
-            if not _has_words(masked):
+            if not prompts.long_enough(masked):
                 report.segments.append(
                     SegmentResult(
                         span=seg.span, original=seg.text, final=seg.text,
-                        translated=False, reason="no translatable words",
+                        translated=False,
+                        reason=f"under {prompts.MIN_WORDS_TO_TRANSLATE} words, "
+                               f"nothing to round-trip",
                         seconds=time.time() - t0,
                     )
                 )

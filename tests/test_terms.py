@@ -210,3 +210,40 @@ def test_an_optional_short_title_is_not_mistaken_for_the_title():
         "\\begin{document}\n\\section[Short]{The Full Title}\n\\end{document}\n"
     )
     assert [s.text for s in doc.segments] == ["The Full Title"]
+
+
+def test_a_paragraph_title_is_translated():
+    r"""Regression, found on a real paper: 47 \paragraph titles were skipped.
+
+    pylatexenc has no argspec for \paragraph, so it emitted the title as a bare
+    group, which this parser deliberately does not descend into.
+    """
+    doc = formats.get("latex").parse(
+        "\\begin{document}\n\\paragraph{Pipeline overview.} Some prose follows.\n"
+        "\\end{document}\n"
+    )
+    texts = [s.text for s in doc.segments]
+    assert "Pipeline overview." in texts
+    assert any(s.meta.get("heading") for s in doc.segments)
+
+
+def test_a_heading_does_not_merge_with_the_paragraph_below_it():
+    r"""Regression: "\subsection{Models}\nPrimary: ..." became one segment
+    beginning "Models}".
+
+    Wrong twice: the model gets a title and a paragraph as one unit, and the
+    merged span keeps heading=True, so the capitalisation restoration meant for
+    titles runs over body prose and capitalises words mid-sentence.
+    """
+    doc = formats.get("latex").parse(
+        "\\begin{document}\n\\subsection{Models}\nPrimary: SmolLM2 is the model.\n"
+        "\\end{document}\n"
+    )
+    texts = [s.text for s in doc.segments]
+    assert "Models" in texts
+    assert not [t for t in texts if t.startswith("Models}")]
+
+    heading = next(s for s in doc.segments if s.text == "Models")
+    body = next(s for s in doc.segments if s.text.startswith("Primary"))
+    assert heading.meta.get("heading")
+    assert not body.meta.get("heading"), "body prose must not be treated as a title"

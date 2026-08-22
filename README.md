@@ -103,6 +103,37 @@ attempts it took, and any segment that fell back.
 The cache is keyed on the model, the hop, the full system prompt, and the exact
 input text, so editing a prompt or a persona correctly invalidates it.
 
+## Freezing a region
+
+Some prose is not yours to reword. A NeurIPS checklist carries questions whose
+wording the template prescribes; a licence notice, a quoted passage, or an
+author list is prose by every structural test this tool applies and must still
+come back byte-identical.
+
+Mark it with comments, which are invisible in the rendered document and cost
+nothing to leave in permanently:
+
+```latex
+% ouroboros: off
+Do the main claims made in the abstract accurately reflect the contributions?
+% ouroboros: on
+```
+
+```markdown
+<!-- ouroboros: off -->
+Prescribed wording nobody may reword.
+<!-- ouroboros: on -->
+```
+
+Segments inside a disabled region are simply not reported as prose, so they are
+protected by exactly the same mechanism as a table or an equation rather than by
+a special case anywhere downstream.
+
+An unclosed `off` runs to the end of the file: forgetting to re-enable gives you
+less translation than you meant, which is the harmless direction to be wrong in.
+Markers do not nest, so a duplicated `off` cannot silently swallow the rest of
+the document.
+
 ## Holding specific words steady
 
 Three things drift that should not, and all three are fixed against the source

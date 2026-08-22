@@ -139,6 +139,52 @@ def check_numbers(source: str, output: str) -> Check:
     return Check(False, "numbers", ", ".join(parts))
 
 
+#: LaTeX escapes. Losing one is not a stylistic drift, it is a document that
+#: no longer compiles: a bare _ or & in text mode is a fatal error.
+_ESCAPE_RE = re.compile(r"\\[&%$#_{}~^]")
+
+
+def check_escapes(source: str, output: str) -> Check:
+    """Every backslash escape must come back, and no new ones may appear.
+
+    A safety net rather than the primary defence. Masking should hide escapes
+    before the model ever sees one, so this firing means a masking rule has a
+    gap. It is cheap, and the failure it catches is severe: on a real paper a
+    gap in the \\texttt rule destroyed 51 of 83 escapes and the output would
+    not build.
+    """
+    want = Counter(_ESCAPE_RE.findall(source))
+    got = Counter(_ESCAPE_RE.findall(output))
+    if want == got:
+        return Check(True, "escapes")
+
+    lost = sorted((want - got).elements())
+    gained = sorted((got - want).elements())
+    parts = []
+    if lost:
+        parts.append(f"lost {lost}")
+    if gained:
+        parts.append(f"invented {gained}")
+    return Check(False, "escapes", ", ".join(parts))
+
+
+def check_negation(source: str, output: str) -> Check:
+    """The count of negation cues must not change.
+
+    A flipped negation is a reversed claim, which is the same order of failure
+    as a changed digit and belongs in the same tier. It was report-only until a
+    real paper came back with "does not \\emph{not} generalize" where the source
+    said "does \\emph{not} generalize": the check caught the double negative and
+    the inverted sentence was written to the file anyway.
+    """
+    from .fidelity import negation_count
+
+    before, after = negation_count(source), negation_count(output)
+    if before == after:
+        return Check(True, "negation")
+    return Check(False, "negation", f"{before} negation cue(s) became {after}")
+
+
 DEFAULT_CHECKS = (
     check_nonempty,
     check_sentinels,
@@ -146,9 +192,32 @@ DEFAULT_CHECKS = (
     check_chatter,
     check_length_ratio,
     check_numbers,
+    check_escapes,
+    check_negation,
 )
 
+#: Checks that compare words, so they only mean anything when both sides are in
+#: the same language. Counting English negation cues in French text finds none,
+#: because French negates with "ne ... pas" and "aucun": "no human judgment"
+#: becomes "aucun jugement humain", one cue becomes zero, and the check fails a
+#: perfectly good translation. That mistake failed 47 segments on a real paper
+#: before it was caught.
+#:
+#: Everything else here counts digits, escapes or placeholders, which mean the
+#: same thing in any language and are checked at every hop.
+LANGUAGE_DEPENDENT = frozenset({check_negation})
 
-def validate(source: str, output: str, checks=DEFAULT_CHECKS) -> Verdict:
-    results = [c(source, output) for c in checks]
+
+def validate(source: str, output: str, checks=DEFAULT_CHECKS,
+             same_language: bool = True) -> Verdict:
+    """Check an output against its source.
+
+    ``same_language`` is False on the outbound leg, where the output is in the
+    pivot language and word-level comparisons against an English source are
+    meaningless.
+    """
+    results = [
+        c(source, output) for c in checks
+        if same_language or c not in LANGUAGE_DEPENDENT
+    ]
     return Verdict(ok=all(r.ok for r in results), checks=results)

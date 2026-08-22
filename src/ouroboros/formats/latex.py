@@ -25,6 +25,7 @@ from pylatexenc.latexwalker import (
 from pylatexenc.macrospec import MacroSpec
 
 from ..document import Document, Segment
+from ..regions import enabled
 from .base import register
 
 #: Environments whose body is prose and should be descended into.
@@ -48,9 +49,16 @@ OPAQUE_ENVIRONMENTS = {
 PROSE_MACRO_ARGS = {
     "section": 0, "subsection": 0, "subsubsection": 0, "paragraph": 0,
     "subparagraph": 0, "chapter": 0, "part": 0, "title": 0,
-    "emph": 0, "textit": 0, "textbf": 0, "textsc": 0, "texttt": 0,
+    "emph": 0, "textit": 0, "textbf": 0, "textsc": 0,
     "underline": 0, "footnote": 0, "text": 0,
 }
+
+#: Monospace macros hold code, paths and identifiers, essentially never prose.
+#: \texttt was in PROSE_MACRO_ARGS, which exposed its contents to the model.
+#: On a real paper that returned \texttt{c3\_scope} as \texttt{c3_scope}: the
+#: model ate the backslash, and a bare underscore in text mode is a fatal LaTeX
+#: error. 51 of 83 escapes in that paper were destroyed this way.
+CODE_MACROS = {"texttt", "lstinline", "path", "verb", "code", "mintinline"}
 
 #: Sectioning commands. Their argument is a title, so the author's
 #: capitalisation of it is meaningful and is restored after translation.
@@ -67,10 +75,15 @@ _PARA_SPLIT = re.compile(r"\n[ \t]*\n")
 _BLANK_LINE = re.compile(r"\n[ \t]*\n")
 _ITEM_RE = re.compile(r"\\item\b")
 
-#: Macros pylatexenc's default database does not know, whose arguments are
-#: identifiers or paths. Without a spec the walker leaves the braces as a bare
-#: group, and the identifier inside it looks exactly like prose.
+#: Macros pylatexenc's default database does not know. Without a spec the walker
+#: leaves the braces as a bare group, which this parser deliberately does not
+#: descend into, so whatever is inside is silently skipped.
+#:
+#: \paragraph and \subparagraph matter more than the rest. They have no spec at
+#: all, and papers use them heavily as run-in subsection titles: one real paper
+#: had 47 of them, every title left untranslated.
 _EXTRA_MACROS = {
+    "paragraph": "*[{", "subparagraph": "*[{",
     "bibliographystyle": "{", "citep": "*[[{", "citet": "*[[{",
     "citeauthor": "{", "citeyear": "{", "autoref": "{", "cref": "{",
     "Cref": "{", "nocite": "{", "bibliographystyleplain": "{",
@@ -88,7 +101,8 @@ def _latex_context():
     return db
 
 
-def _merge_runs(runs: list[tuple[int, int]], source: str) -> list[tuple[int, int]]:
+def _merge_runs(runs: list[tuple[int, int]], source: str,
+                headings: set[tuple[int, int]] | None = None) -> list[tuple[int, int]]:
     """Rejoin prose runs that a macro merely interrupted.
 
     The walker ends a character run at every macro, so a single sentence
@@ -101,16 +115,41 @@ def _merge_runs(runs: list[tuple[int, int]], source: str) -> list[tuple[int, int
     correct, because the masking layer hides \\cite and \\ref before the model
     sees them. A gap that crosses a blank line, an environment boundary, or a
     comment ends the paragraph and is never merged across.
+
+    A heading title never merges with anything. The gap after one is just the
+    closing brace, which read as inline material and glued run-in titles onto
+    the paragraph below them: "\\subsection{Models}\\nPrimary: SmolLM2..." became
+    a single segment beginning "Models}". That is wrong twice over. It hands the
+    model a title and a paragraph as one unit, and it marks the whole thing as a
+    heading, so the capitalisation restoration meant for titles then runs over a
+    body paragraph and capitalises words mid-sentence.
     """
+    headings = headings or set()
     merged: list[tuple[int, int]] = []
-    for lo, hi in sorted(set(runs)):
+    is_heading: list[bool] = []
+
+    for span in sorted(set(runs)):
+        lo, hi = span
+        heading = span in headings
+
         if merged and lo <= merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            is_heading[-1] = is_heading[-1] or heading
             continue
-        if merged and _joinable(source[merged[-1][1]:lo]):
+
+        joinable = (
+            merged
+            and not heading
+            and not is_heading[-1]
+            and _joinable(source[merged[-1][1]:lo])
+        )
+        if joinable:
             merged[-1] = (merged[-1][0], hi)
             continue
-        merged.append((lo, hi))
+
+        merged.append(span)
+        is_heading.append(heading)
+
     return merged
 
 
@@ -151,7 +190,7 @@ class LatexFormat:
         runs: list[tuple[int, int]] = []
         headings: list[tuple[int, int]] = []
         self._collect(body, source, runs, headings)
-        runs = _merge_runs(runs, source)
+        runs = _merge_runs(runs, source, set(headings))
 
         segments: list[Segment] = []
         for lo, hi in runs:
@@ -161,6 +200,7 @@ class LatexFormat:
                     seg.meta["heading"] = True
                 segments.append(seg)
 
+        segments = enabled(segments, source, self.name)
         return Document(source=source, segments=segments, path=path, fmt=self.name)
 
     # ------------------------------------------------------------------ walk

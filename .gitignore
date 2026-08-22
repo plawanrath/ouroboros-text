@@ -12,6 +12,10 @@ personas/*
 # The template stays tracked.
 glossary.txt
 
+# Ad-hoc evaluation runs against real papers. Large, and the inputs are
+# other people's work.
+adhoc/
+
 # Run artifacts
 out/
 .ouroboros-cache/

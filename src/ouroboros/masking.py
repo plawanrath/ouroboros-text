@@ -62,6 +62,14 @@ def _r(name: str, pattern: str, keep_group: str | None = None, flags: int = 0) -
     return Rule(name, re.compile(pattern, flags), keep_group)
 
 
+#: A label containing a backslash is not plain prose: it carries an escape such
+#: as \_ or \&, or a nested macro. Exposing one to the model loses it. That is
+#: how \texttt{c3\_scope} came back as \texttt{c3_scope}, which is a fatal
+#: LaTeX error rather than a cosmetic drift, so any such label is hidden whole
+#: rather than shown.
+_LABEL_HAS_ESCAPE = re.compile(r"\\")
+
+
 # Order matters: earlier rules win over later ones on overlapping matches.
 MARKDOWN_RULES: list[Rule] = [
     # A task list checkbox opens the item's text. It is not CommonMark, so the
@@ -86,6 +94,9 @@ MARKDOWN_RULES: list[Rule] = [
 _OPAQUE_MACROS = (
     "cite|citep|citet|citeauthor|citeyear|ref|eqref|autoref|cref|Cref|pageref|label"
     r"|includegraphics|input|include|bibliography|bibliographystyle|url|nocite|hyperref"
+    # Monospace is code: identifiers, paths, flags. Never translate it, and in
+    # particular never expose its escapes to the model.
+    r"|texttt|lstinline|path|verb|code|mintinline"
 )
 
 LATEX_RULES: list[Rule] = [
@@ -101,7 +112,7 @@ LATEX_RULES: list[Rule] = [
     # more thing for the model to misplace.
     _r(
         "text_macro",
-        r"\\(?:emph|textit|textbf|textsc|texttt|textrm|textsf|underline|text|mbox)"
+        r"\\(?:emph|textit|textbf|textsc|textrm|textsf|underline|text|mbox)"
         r"\s*\{(?P<label>[^{}]*)\}",
         keep_group="label",
     ),
@@ -129,6 +140,8 @@ class Masker:
                 if lo == hi or any(lo < c_hi and c_lo < hi for c_lo, c_hi in claimed):
                     continue  # an earlier, higher-priority rule already owns this
                 keep = m.group(rule.keep_group) if rule.keep_group else None
+                if keep is not None and _LABEL_HAS_ESCAPE.search(keep):
+                    keep = None   # hide the whole construct instead
                 matches.append((lo, hi, m.group(0), keep))
                 claimed.append((lo, hi))
 

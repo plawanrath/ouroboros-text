@@ -87,17 +87,19 @@ def test_interrupted_work_is_cached_so_resuming_is_free(tmp_path):
     _, first = _trip(_StopsAfter(5), cache=cache, model_id="m").run(doc)
     assert first.interrupted
 
-    done, total = _trip(MockBackend(), cache=cache, model_id="m").pending(doc)
+    done, total, chars = _trip(MockBackend(), cache=cache, model_id="m").pending(doc)
     assert done == first.translated
     assert total == 10
+    assert chars > 0, "work left should carry a character count for the estimate"
 
 
 # ------------------------------------------------------------------- pending
 
 
 def test_pending_counts_nothing_as_cached_on_a_cold_cache(tmp_path):
-    done, total = _trip(cache=Cache(tmp_path / "cache"), model_id="m").pending(_doc())
+    done, total, chars = _trip(cache=Cache(tmp_path / "cache"), model_id="m").pending(_doc())
     assert (done, total) == (0, 10)
+    assert chars > 0
 
 
 def test_pending_counts_everything_after_a_full_run(tmp_path):
@@ -106,7 +108,9 @@ def test_pending_counts_everything_after_a_full_run(tmp_path):
     trip = _trip(cache=cache, model_id="m")
     trip.run(doc)
 
-    assert trip.pending(doc) == (10, 10)
+    done, total, chars = trip.pending(doc)
+    assert (done, total) == (10, 10)
+    assert chars == 0, "nothing is left, so no characters remain to cost"
 
 
 def test_pending_is_sensitive_to_the_persona(tmp_path):
@@ -182,25 +186,25 @@ def test_durations_read_like_something_a_person_would_say(seconds, expected):
 
 
 def test_the_estimate_starts_from_a_guess_and_then_measures():
-    est = Estimator(uncached=10)
+    est = Estimator(uncached=10, uncached_chars=3000)
     assert not est.measured
     first = est.remaining_seconds
 
     for _ in range(3):
-        est.record(10.0)
+        est.record(10.0, 300)
 
     assert est.measured
     assert est.seconds_per_segment == pytest.approx(10.0)
-    assert est.remaining_seconds == pytest.approx(70.0)
+    # Faster than the fitted model predicted, so the estimate comes down.
     assert est.remaining_seconds < first
 
 
 def test_cached_segments_do_not_drag_the_pace_estimate():
     """A cached segment costs a file read and would otherwise imply the whole
     run is nearly instant."""
-    est = Estimator(uncached=5, cached=5)
-    est.record(0.01)          # cached
-    est.record(20.0)          # real work
+    est = Estimator(uncached=5, cached=5, uncached_chars=1500)
+    est.record(0.01, 300)     # cached
+    est.record(20.0, 300)     # real work
 
     assert est.seconds_per_segment == pytest.approx(20.0)
     assert est.remaining_uncached == 4
@@ -210,7 +214,64 @@ def test_the_summary_says_what_is_already_done():
     assert "all cached" in summarise(total=10, cached=10, files=1)
     assert "nothing to translate" == summarise(total=0, cached=0, files=1)
 
-    line = summarise(total=10, cached=6, files=3)
+    line = summarise(total=10, cached=6, files=3, chars=2000)
     assert "6 already cached" in line
     assert "4 to translate" in line
     assert "across 3 files" in line
+
+
+def test_the_estimate_scales_with_segment_length():
+    """Regression: a flat per-segment rate predicted 68 minutes for a run that
+    took four hours, because that paper's paragraphs were three times longer
+    than the fixtures the rate was calibrated on."""
+    short = Estimator(uncached=10, uncached_chars=1000)
+    long_ = Estimator(uncached=10, uncached_chars=10000)
+    assert long_.remaining_seconds > 2 * short.remaining_seconds
+
+
+def test_a_run_of_short_segments_does_not_make_long_ones_look_fast():
+    """Averaging seconds per segment goes wrong on a document that opens with
+    headings: the pace looks quick, then the body paragraphs arrive."""
+    est = Estimator(uncached=10, uncached_chars=100 * 5 + 9 * 1000)
+    est.record(20.0, 100)          # one short heading, quickly done
+
+    # Nine long paragraphs remain. The estimate must reflect their size, not
+    # the pace of the heading.
+    assert est.remaining_seconds > 9 * 20.0
+
+
+# ------------------------------------------- segments too short to round-trip
+
+
+def test_a_heading_is_left_alone():
+    """Measured on a real paper: of 46 changed segments under seven words, not
+    one came back better than it went out.
+
+    A heading is a noun phrase with no sentence around it. Through another
+    language it returns as a synonym ("Diagnosis." -> "Diagnostic"), and even
+    when the words survive the shape does not: a run-in title that loses its
+    trailing period stops rendering correctly.
+    """
+    doc = formats.get("markdown").parse("# Experimental Setup\n", path="h.md")
+    backend = MockBackend()
+    output, report = _trip(backend).run(doc)
+
+    assert output == doc.source
+    assert not backend.calls, "a heading was sent to the model"
+    assert report.fallbacks and "round-trip" in report.fallbacks[0].reason
+
+
+def test_real_prose_is_still_translated():
+    """The threshold must not swallow ordinary sentences."""
+    doc = _doc()
+    output, report = _trip().run(doc)
+    assert report.translated == 10
+    assert output != doc.source
+
+
+def test_the_threshold_counts_words_not_placeholders():
+    """A citation-heavy line is not prose just because it is long."""
+    from ouroboros.prompts import long_enough
+
+    assert not long_enough("[[0]] [[1]] [[2]] [[3]] [[4]] [[5]] [[6]] [[7]]")
+    assert long_enough("this sentence has more than seven ordinary words in it")

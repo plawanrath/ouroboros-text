@@ -205,3 +205,97 @@ def test_the_report_records_issues_as_json():
     issue = next(s["issues"][0] for s in data["segments"] if s["issues"])
     assert issue["severity"] == "low"
     assert "hedge" in issue["detail"]
+
+
+# ------------------------------------------------- escapes break the build
+
+
+def test_monospace_content_is_never_shown_to_the_model():
+    r"""Regression from a real paper, and the worst kind: the output stopped
+    compiling.
+
+    \texttt was treated as prose, so its label was exposed. The model returned
+    \texttt{c3\_scope} as \texttt{c3_scope}, and a bare underscore in text mode
+    is a fatal LaTeX error. 51 of 83 escapes in that paper were destroyed.
+    """
+    from ouroboros.masking import Masker, rules_for
+
+    masker = Masker(rules_for("latex"))
+    text = r"the validator \texttt{c3\_scope.validate(s)} returns true"
+    masked, mapping = masker.mask(text)
+
+    assert "c3" not in masked
+    assert "\\_" not in masked
+    assert masker.unmask(masked, mapping) == text
+
+
+def test_a_label_containing_an_escape_is_hidden_whole():
+    """Even for a genuinely prose-bearing macro. An exposed escape is lost."""
+    from ouroboros.masking import Masker, rules_for
+
+    masker = Masker(rules_for("latex"))
+    text = r"an \emph{escaped \& label} here"
+    masked, mapping = masker.mask(text)
+
+    assert "\\&" not in masked
+    assert masker.unmask(masked, mapping) == text
+
+
+def test_an_ordinary_label_is_still_translatable():
+    """The guard must not make every emphasis opaque."""
+    from ouroboros.masking import Masker, rules_for
+
+    masked, _ = Masker(rules_for("latex")).mask(r"some \emph{ordinary emphasis} here")
+    assert "ordinary emphasis" in masked
+
+
+def test_a_lost_escape_blocks_the_segment():
+    from ouroboros.validate import check_escapes
+
+    bad = check_escapes(r"see \texttt{a\_b}", r"see \texttt{a_b}")
+    assert not bad.ok
+    assert "_" in bad.detail
+    assert check_escapes(r"a \_ b", r"a \_ b").ok
+
+
+def test_a_lost_escape_is_reported_at_high_severity():
+    severe = {i.kind for i in compare(r"a \_ b", r"a _ b") if i.severity == "high"}
+    assert "escapes" in severe
+
+
+# ------------------------------------------- checks that need one language
+
+
+def test_negation_is_not_checked_against_the_pivot_language():
+    """Regression: 47 good segments were failed on a real paper.
+
+    The negation lexicon is English. French negates with "ne ... pas" and
+    "aucun", so "no human judgment" becomes "aucun jugement humain": one cue
+    becomes zero and a correct translation is rejected.
+    """
+    from ouroboros.validate import validate
+
+    verdict = validate("no human judgment is required",
+                       "aucun jugement humain n'est requis",
+                       same_language=False)
+    assert verdict.ok, verdict.summary
+
+
+def test_negation_is_checked_once_the_text_is_english_again():
+    """The inversion this check exists for must still be caught."""
+    from ouroboros.validate import validate
+
+    verdict = validate(r"does \emph{not} generalize uniformly",
+                       r"does not \emph{not} generalize uniformly",
+                       same_language=True)
+    assert not verdict.ok
+    assert "negation" in verdict.summary
+
+
+def test_language_independent_checks_run_on_every_leg():
+    """Digits and escapes mean the same thing in any language."""
+    from ouroboros.validate import validate
+
+    assert not validate("gives 256 levels", "donne 512 niveaux",
+                        same_language=False).ok
+    assert not validate(r"see \_ here", "voir _ ici", same_language=False).ok

@@ -25,6 +25,7 @@ from mdit_py_plugins.footnote import footnote_plugin
 from mdit_py_plugins.front_matter import front_matter_plugin
 
 from ..document import Document, Segment
+from ..regions import enabled
 from .base import register
 
 #: Block tokens whose content is running prose we want translated.
@@ -225,6 +226,7 @@ class MarkdownFormat:
                     )
                 )
 
+        segments = enabled(segments, source, self.name)
         return Document(source=source, segments=segments, path=path, fmt=self.name)
 
 

@@ -19,7 +19,7 @@ from typing import Self
 import click
 
 from . import config as config_mod
-from . import modelstore, progress, project, terms
+from . import mining, modelstore, progress, project, terms
 from . import persona as persona_mod
 from .backends import base as backends
 from .formats import base as formats
@@ -221,6 +221,50 @@ def report(reports: tuple[str, ...], limit: int, show_all: bool) -> None:
         click.echo(f"\n... {len(flagged) - limit} more (--all to see them)")
 
 
+# ------------------------------------------------------------------ glossary
+
+
+@app.command()
+@click.argument("outputs", nargs=-1, required=True, type=click.Path(exists=True))
+@click.option("-o", "--out", "out_path", default=None, type=click.Path(),
+              help="Write the glossary here instead of to standard output.")
+@click.option("--min-occurrences", default=mining.MIN_OCCURRENCES, show_default=True,
+              help="Ignore a term seen fewer times than this. One loss is an anecdote.")
+@click.option("--max-survival", default=mining.MAX_SURVIVAL, show_default=True,
+              help="Protect a term surviving at most this fraction of the time.")
+def glossary(outputs: tuple[str, ...], out_path: str | None,
+             min_occurrences: int, max_survival: float) -> None:
+    """Learn which terms the round trip cannot carry, from a finished run.
+
+    Reads the report.json files a translation writes and measures, for every
+    coined term, how often the output still contained it. A term of art that the
+    pivot language has no word for comes back as a synonym nearly every time; an
+    ordinary word reworded in one sentence survives in the next twenty.
+
+    Review the result before using it. Protecting a term means the model never
+    sees it, so a word that should be translated does not belong in the file.
+    """
+    pairs = []
+    for directory in outputs:
+        pairs += mining.pairs_from_reports(directory)
+
+    if not pairs:
+        _echo_err("no translated segments found; run a translation first")
+        sys.exit(1)
+
+    stats = mining.mine(pairs, min_occurrences, max_survival)
+    text = mining.render(stats, f"{len(pairs)} translated segments",
+                         min_occurrences, max_survival)
+
+    if out_path:
+        Path(out_path).write_text(text, encoding="utf-8")
+        click.secho(f"wrote {len(stats)} term(s) to {out_path}", fg="green")
+        for s in stats[:10]:
+            click.echo(f"  {s}")
+    else:
+        click.echo(text, nl=False)
+
+
 # ---------------------------------------------------------------- translate
 
 
@@ -387,19 +431,21 @@ def translate(
     # paper this is the difference between "about four hours" and "about six
     # minutes", and it is worth knowing before committing rather than after.
     docs: list[tuple[WorkItem, object]] = []
-    total = cached_total = 0
+    total = cached_total = total_chars = 0
     for item in plan.items:
         source = item.source.read_text(encoding="utf-8")
         doc = formats.for_path(item.source).parse(
             source, path=str(item.source), fragment=item.fragment
         )
         doc = _select(doc, limit, sample)
-        done, count = trip.pending(doc)
+        done, count, chars = trip.pending(doc)
         total += count
         cached_total += done
+        total_chars += chars
         docs.append((item, doc))
 
-    click.secho(progress.summarise(total, cached_total, len(plan.items)), bold=True)
+    click.secho(progress.summarise(total, cached_total, len(plan.items), total_chars),
+                bold=True)
     if limit or sample:
         click.secho(
             "  partial run: unselected paragraphs are left in English", fg="yellow"
@@ -407,7 +453,7 @@ def translate(
     if total:
         click.echo("  press Ctrl-C to stop; finished paragraphs are kept and cached")
 
-    estimator = progress.Estimator(total - cached_total, cached_total)
+    estimator = progress.Estimator(total - cached_total, cached_total, total_chars)
     interrupted = False
 
     guard = InterruptGuard()
@@ -426,7 +472,7 @@ def translate(
               item_show_func=lambda _: estimator.describe(),
           ) as bar:
               def advance(seg_result, bar=bar):
-                  estimator.record(seg_result.seconds)
+                  estimator.record(seg_result.seconds, len(seg_result.original))
                   bar.update(1)
 
               trip_result, run_report = trip.run(doc, on_segment=advance)

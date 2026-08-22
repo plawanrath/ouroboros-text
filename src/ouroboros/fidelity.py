@@ -53,6 +53,9 @@ _HEDGES = {
 #: spanning hyphens is what catches Llama-3-8B, which \w alone stops at "Llama".
 _IDENTIFIER = re.compile(r"\b[A-Za-z][\w.-]*\d[\w.-]*")
 
+#: LaTeX escapes. Their loss breaks the build, so they rank with numbers.
+_ESCAPE = re.compile(r"\\[&%$#_{}~^]")
+
 _WORD = re.compile(r"[A-Za-z']+")
 _SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
 
@@ -107,6 +110,11 @@ def _lexicon_count(text: str, lexicon: set[str]) -> int:
     return sum(1 for w in words if w in lexicon or w.endswith("n't"))
 
 
+def negation_count(text: str) -> int:
+    """Negation cues in the text. Shared with the blocking validator."""
+    return _lexicon_count(text, _NEGATIONS)
+
+
 def sentence_count(text: str) -> int:
     return max(1, len(_SENTENCE_END.findall(_strip(text).strip())))
 
@@ -136,6 +144,17 @@ def compare(source: str, output: str) -> list[Issue]:
         if gained:
             parts.append(f"gained {gained}")
         issues.append(Issue("identifiers", ", ".join(parts), "high"))
+
+    want, got = Counter(_ESCAPE.findall(_strip(source))), Counter(_ESCAPE.findall(_strip(output)))
+    if want != got:
+        lost = sorted((want - got).elements())
+        gained = sorted((got - want).elements())
+        parts = []
+        if lost:
+            parts.append(f"lost {lost}")
+        if gained:
+            parts.append(f"invented {gained}")
+        issues.append(Issue("escapes", ", ".join(parts), "high"))
 
     before, after = _lexicon_count(source, _NEGATIONS), _lexicon_count(output, _NEGATIONS)
     if before != after:
